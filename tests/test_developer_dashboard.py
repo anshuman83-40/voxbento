@@ -171,6 +171,8 @@ async def test_register_client_rejects_invalid_redirect_uris(redirect_uris, reas
     [
         pytest.param("   ", b"App name cannot be empty.", id="blank"),
         pytest.param("n" * (MAX_NAME_LENGTH + 1), b"App name must be 200 characters or fewer.", id="too-long"),
+        pytest.param("My\x00Plugin", b"App name contains characters that are not allowed.", id="nul"),
+        pytest.param("My\nPlugin", b"App name contains characters that are not allowed.", id="newline"),
     ],
 )
 async def test_register_client_rejects_invalid_app_name(app_name, reason, setup_db):
@@ -263,6 +265,7 @@ async def test_apply_creates_pending_account_with_trimmed_name(setup_db):
         pytest.param(
             "o" * (MAX_NAME_LENGTH + 1), b"Organization / project name must be 200 characters or fewer.", id="too-long"
         ),
+        pytest.param("Acme\x00Org", b"Organization / project name contains characters that are not allowed.", id="nul"),
     ],
 )
 async def test_apply_rejects_invalid_organization_name(organization_name, reason, setup_db):
@@ -274,3 +277,84 @@ async def test_apply_rejects_invalid_organization_name(organization_name, reason
     assert reason in resp.content
     assert b"Apply for Developer Access" in resp.content
     assert await _stored_accounts() == []
+
+
+# ---------------------------------------------------------------------------
+# /oauth/authorize with clients registered before redirect URIs were validated
+# ---------------------------------------------------------------------------
+
+
+async def _store_client(redirect_uri: str) -> str:
+    """Insert an OAuth client directly, bypassing the dashboard validation."""
+    async with get_session() as s:
+        account = (await s.execute(select(DeveloperAccount))).scalars().one()
+        s.add(
+            OAuthClient(
+                developer_account_id=account.id,
+                client_id="client_legacy",
+                name="Legacy",
+                redirect_uris=[redirect_uri],
+            )
+        )
+        await s.commit()
+    return "client_legacy"
+
+
+async def _deny(cookies: dict[str, str], client_id: str, redirect_uri: str):
+    async with _client() as c:
+        return await c.post(
+            "/oauth/authorize",
+            data={
+                "client_id": client_id,
+                "redirect_uri": redirect_uri,
+                "state": "S",
+                "code_challenge": "x",
+                "code_challenge_method": "S256",
+                "event_id": 1,
+                "scope": "events:read",
+                "action": "deny",
+            },
+            cookies=cookies,
+            follow_redirects=False,
+        )
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stored", ["not a url", "/relative/cb", "javascript:alert(1)", "https:///cb"])
+async def test_authorize_refuses_stored_redirect_uri_that_is_not_an_absolute_http_url(stored, setup_db):
+    cookies = await _developer_cookies()
+    client_id = await _store_client(stored)
+
+    resp = await _deny(cookies, client_id, stored)
+    assert resp.status_code == 400
+    assert "location" not in resp.headers
+
+    async with _client() as c:
+        resp = await c.get(
+            "/oauth/authorize",
+            params={
+                "client_id": client_id,
+                "redirect_uri": stored,
+                "response_type": "code",
+                "code_challenge": "x",
+                "code_challenge_method": "S256",
+                "event": "testcon",
+            },
+            cookies=cookies,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == "Invalid redirect_uri."
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stored", ["https://app.example/cb", "http://staging.internal/cb"])
+async def test_authorize_still_redirects_to_stored_http_urls(stored, setup_db):
+    """Plain http on a remote host is no longer accepted for new apps, but existing ones keep working."""
+    cookies = await _developer_cookies()
+    client_id = await _store_client(stored)
+
+    resp = await _deny(cookies, client_id, stored)
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == f"{stored}?error=access_denied&state=S"

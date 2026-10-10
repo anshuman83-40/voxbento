@@ -38,6 +38,9 @@ def clean_name(value: str, label: str) -> str:
         raise ValueError(f"{label} cannot be empty.")
     if len(name) > MAX_NAME_LENGTH:
         raise ValueError(f"{label} must be {MAX_NAME_LENGTH} characters or fewer.")
+    # PostgreSQL rejects NUL in text columns; other control characters have no place in a display name.
+    if not name.isprintable():
+        raise ValueError(f"{label} contains characters that are not allowed.")
     return name
 
 
