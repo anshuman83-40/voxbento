@@ -320,7 +320,17 @@ async def _deny(cookies: dict[str, str], client_id: str, redirect_uri: str):
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("stored", ["not a url", "/relative/cb", "javascript:alert(1)", "https:///cb"])
+@pytest.mark.parametrize(
+    "stored",
+    [
+        "not a url",
+        "/relative/cb",
+        "javascript:alert(1)",
+        "https:///cb",
+        "https://app.example:70000/cb",
+        "https://app.example:notaport/cb",
+    ],
+)
 async def test_authorize_refuses_stored_redirect_uri_that_is_not_an_absolute_http_url(stored, setup_db):
     cookies = await _developer_cookies()
     client_id = await _store_client(stored)

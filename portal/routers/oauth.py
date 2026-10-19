@@ -68,9 +68,11 @@ def is_absolute_http_url(uri: str) -> bool:
     """
     try:
         parts = urllib.parse.urlsplit(uri)
+        # Reading .port is what raises ValueError for a malformed or out-of-range port.
+        hostname, _port = parts.hostname, parts.port
     except ValueError:
         return False
-    return parts.scheme in ("http", "https") and bool(parts.hostname)
+    return parts.scheme in ("http", "https") and bool(hostname)
 
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
@@ -143,7 +145,6 @@ async def authorize_get(
         if login_hint:
             login_url += f"&email={urllib.parse.quote(login_hint)}"
         return safe_redirect(url=login_url, status_code=status.HTTP_303_SEE_OTHER)
-
 
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
