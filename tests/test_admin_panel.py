@@ -2441,3 +2441,141 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+class TestEventScopedMemberAndInviteTokenRoutes:
+    """require_admin authorizes the event (or room) in the path, not the ids that follow it.
+
+    An event owner must not reach another event's memberships or invite tokens by putting
+    their own event in the URL and the other event's ids after it.
+    """
+
+    @staticmethod
+    async def _event_membership(event_id, email):
+        from portal.database import create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            user = await create_user(s, email=email, display_name=email)
+            membership = await set_event_membership(s, user_id=user.id, event_id=event_id, role="room_coordinator")
+            return membership.id
+
+    @pytest.mark.anyio
+    async def test_create_invite_token_rejects_booth_from_other_event(self, room_scope_events):
+        from sqlalchemy import select
+
+        from portal.database import get_session
+        from portal.models import InviteToken
+
+        scope = room_scope_events
+        async with _client() as c:
+            for room_id in (scope["room_a"], scope["room_b"]):
+                resp = await c.post(
+                    f"/workspace/events/{scope['event_a']}/rooms/{room_id}/booths/{scope['booth_b']}/tokens/",
+                    data={"role": "interpreter", "label": "cross-event"},
+                    cookies=scope["owner_cookie"],
+                    follow_redirects=False,
+                )
+                assert resp.status_code == 404
+
+        async with get_session() as s:
+            tokens = (await s.execute(select(InviteToken).where(InviteToken.booth_id == scope["booth_b"]))).scalars()
+            assert [t.token for t in tokens] == [scope["invite_b"]]
+
+    @pytest.mark.anyio
+    async def test_create_invite_token_for_own_booth(self, room_scope_events):
+        from sqlalchemy import select
+
+        from portal.database import get_session
+        from portal.models import InviteToken
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/tokens/",
+                data={"role": "interpreter", "label": "own-event"},
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        async with get_session() as s:
+            created = (await s.execute(select(InviteToken).where(InviteToken.label == "own-event"))).scalars().one()
+            assert created.booth_id == scope["booth_a"]
+
+    @pytest.mark.anyio
+    async def test_revoke_invite_token_rejects_token_from_other_event(self, room_scope_events):
+        from portal.database import get_session
+        from portal.models import InviteToken
+
+        scope = room_scope_events
+        async with _client() as c:
+            for room_id, booth_id in ((scope["room_a"], scope["booth_a"]), (scope["room_b"], scope["booth_b"])):
+                resp = await c.post(
+                    f"/workspace/events/{scope['event_a']}/rooms/{room_id}/booths/{booth_id}"
+                    f"/tokens/{scope['invite_b']}/revoke",
+                    cookies=scope["owner_cookie"],
+                    follow_redirects=False,
+                )
+                assert resp.status_code == 404
+
+        async with get_session() as s:
+            assert (await s.get(InviteToken, scope["invite_b"])).used_at is None
+
+    @pytest.mark.anyio
+    async def test_revoke_invite_token_for_own_booth(self, room_scope_events):
+        from portal.database import create_invite_token, get_session
+        from portal.models import InviteToken
+
+        scope = room_scope_events
+        async with get_session() as s:
+            token = (await create_invite_token(s, booth_id=scope["booth_a"], role="interpreter")).token
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}"
+                f"/tokens/{token}/revoke",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await s.get(InviteToken, token)).used_at is not None
+
+    @pytest.mark.anyio
+    async def test_remove_member_rejects_membership_from_other_event(self, room_scope_events):
+        from portal.database import get_session
+        from portal.models import EventMembership
+
+        scope = room_scope_events
+        membership_b = await self._event_membership(scope["event_b"], "member-b@example.com")
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/members/{membership_b}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 404
+        async with get_session() as s:
+            assert await s.get(EventMembership, membership_b) is not None
+
+    @pytest.mark.anyio
+    async def test_remove_member_from_own_event(self, room_scope_events):
+        from portal.database import get_session
+        from portal.models import EventMembership
+
+        scope = room_scope_events
+        membership_a = await self._event_membership(scope["event_a"], "member-a@example.com")
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/members/{membership_a}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await s.get(EventMembership, membership_a) is None

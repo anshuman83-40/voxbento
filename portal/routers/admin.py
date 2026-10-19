@@ -2038,6 +2038,10 @@ async def admin_invite_event_member(request: Request, event_id: int, membership_
 @router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_admin)])
 async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
     async with get_session() as session:
+        # require_admin authorizes the event in the path, so the membership must belong to it.
+        memberships = await list_memberships_for_event(session, event_id)
+        if not any(m.id == membership_id for m in memberships):
+            raise HTTPException(status_code=404, detail="Membership not found.")
         await remove_event_membership(session, membership_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/members/"), status_code=status.HTTP_303_SEE_OTHER
@@ -2058,8 +2062,15 @@ async def admin_create_token(request: Request, event_id: int, room_id: int, boot
             expires_at = utc_now() + timedelta(hours=int(expires_hours))
         except ValueError:
             pass
-    if role:
-        async with get_session() as session:
+    async with get_session() as session:
+        # require_admin authorizes the event (or room) in the path, not the booth id.
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+        db_booth = await get_booth_by_id(session, booth_id)
+        if db_booth is None or db_booth.room_id != room_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+        if role:
             await create_invite_token(session, booth_id=booth_id, role=role, label=label, expires_at=expires_at)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
@@ -2073,6 +2084,16 @@ async def admin_create_token(request: Request, event_id: int, room_id: int, boot
 )
 async def admin_revoke_token(request: Request, event_id: int, room_id: int, booth_id: int, token_id: str):
     async with get_session() as session:
+        # require_admin authorizes the event (or room) in the path, not the token.
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+        db_booth = await get_booth_by_id(session, booth_id)
+        if db_booth is None or db_booth.room_id != room_id:
+            raise HTTPException(status_code=404, detail="Booth not found.")
+        tokens = await list_tokens_for_booth(session, booth_id)
+        if not any(t.token == token_id for t in tokens):
+            raise HTTPException(status_code=404, detail="Invite token not found.")
         await revoke_invite_token(session, token_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
