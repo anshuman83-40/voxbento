@@ -141,6 +141,7 @@ async def test_register_client_with_valid_redirect_uris(setup_db):
 @pytest.mark.parametrize(
     "redirect_uris, reason",
     [
+        ("", b"Enter at least one redirect URI."),
         (",,", b"Enter at least one redirect URI."),
         ("not a url", b"it contains spaces or control characters"),
         ("app.example/cb", b"it must start with https://"),
@@ -169,6 +170,7 @@ async def test_register_client_rejects_invalid_redirect_uris(redirect_uris, reas
 @pytest.mark.parametrize(
     "app_name, reason",
     [
+        pytest.param("", b"App name cannot be empty.", id="empty"),
         pytest.param("   ", b"App name cannot be empty.", id="blank"),
         pytest.param("n" * (MAX_NAME_LENGTH + 1), b"App name must be 200 characters or fewer.", id="too-long"),
         pytest.param("My\x00Plugin", b"App name contains characters that are not allowed.", id="nul"),
@@ -261,6 +263,7 @@ async def test_apply_creates_pending_account_with_trimmed_name(setup_db):
 @pytest.mark.parametrize(
     "organization_name, reason",
     [
+        pytest.param("", b"Organization / project name cannot be empty.", id="empty"),
         pytest.param("   ", b"Organization / project name cannot be empty.", id="blank"),
         pytest.param(
             "o" * (MAX_NAME_LENGTH + 1), b"Organization / project name must be 200 characters or fewer.", id="too-long"

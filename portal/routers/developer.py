@@ -151,7 +151,7 @@ async def developer_dashboard(
 @router.post("/api/developer/apply")
 async def apply_for_developer(
     request: Request,
-    organization_name: str = Form(...),
+    organization_name: str = Form(""),
     csrf_token: str = Form(...),
     dashboard_csrf: str | None = Cookie(None),
     user: dict = Depends(require_user),
@@ -186,8 +186,10 @@ async def apply_for_developer(
 @router.post("/api/developer/clients")
 async def create_oauth_client(
     request: Request,
-    app_name: str = Form(...),
-    redirect_uris: str = Form(...),
+    # Empty defaults let missing or empty fields reach clean_name()/parse_redirect_uris() and get
+    # the dashboard's 400 message; FastAPI would otherwise answer 422 before the handler runs.
+    app_name: str = Form(""),
+    redirect_uris: str = Form(""),
     csrf_token: str = Form(...),
     dashboard_csrf: str | None = Cookie(None),
     user: dict = Depends(require_user),
